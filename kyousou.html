@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>横スクロール障害物ゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Arial', sans-serif;
+        }
+        
+        h1 {
+            color: white;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        #gameCanvas {
+            border: 3px solid #333;
+            background: linear-gradient(to bottom, #87CEEB 0%, #98D8C8 100%);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            border-radius: 10px;
+        }
+        
+        .info {
+            color: white;
+            margin-top: 15px;
+            font-size: 18px;
+            text-align: center;
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 30px 50px;
+            border-radius: 15px;
+            text-align: center;
+            display: none;
+            z-index: 100;
+        }
+        
+        .game-over h2 {
+            margin-top: 0;
+            color: #ff6b6b;
+        }
+        
+        .game-over button {
+            margin-top: 20px;
+            padding: 10px 30px;
+            font-size: 18px;
+            background: #4ecdc4;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .game-over button:hover {
+            background: #45b7aa;
+        }
+        
+        #container {
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <h1>🏃 横スクロール障害物ゲーム</h1>
+    <div id="container">
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div class="game-over" id="gameOver">
+            <h2>ゲームオーバー！</h2>
+            <p>スコア: <span id="finalScore">0</span></p>
+            <button onclick="restartGame()">もう一度プレイ</button>
+        </div>
+    </div>
+    <div class="info">
+        <p>スペースキーまたは上矢印キーでジャンプ</p>
+        <p>スコア: <span id="score">0</span></p>
+    </div>
+
+    <script>
+        // ============================================
+        // ゲームの基本設定
+        // ============================================
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameOverDiv = document.getElementById('gameOver');
+        const scoreElement = document.getElementById('score');
+        const finalScoreElement = document.getElementById('finalScore');
+
+        // ゲームの状態
+        let gameRunning = true;
+        let score = 0;
+        let gameSpeed = 2;
+
+        // ============================================
+        // プレイヤー（人間）の設定
+        // ============================================
+        const player = {
+            x: 100,                    // X座標（左からの位置）
+            y: 300,                    // Y座標（上からの位置）
+            width: 40,                 // 幅
+            height: 40,                // 高さ
+            velocityY: 0,              // Y方向の速度
+            jumpPower: -18,            // ジャンプの強さ（ふんわり跳ぶために上げる）
+            gravity: 0.6,              // 重力（ふんわり跳ぶために下げる）
+            onGround: false,           // 地面にいるかどうか
+            groundY: 300,              // 地面のY座標
+            jumpCount: 0,              // ジャンプ回数（二段ジャンプ用）
+            maxJumps: 2,               // 最大ジャンプ回数
+            rotation: 0,               // 回転角度（アニメーション用）
+            scale: 1,                  // スケール（アニメーション用）
+            lastY: 300                 // 前フレームのY座標（アニメーション用）
+        };
+
+        // ============================================
+        // 障害物の配列
+        // ============================================
+        let obstacles = [];
+        let obstacleTimer = 0;
+        const obstacleInterval = 120;  // 障害物を生成する間隔（フレーム数）
+        
+        // ============================================
+        // パーティクルエフェクトの配列
+        // ============================================
+        let particles = [];
+
+        // ============================================
+        // 地面の描画
+        // ============================================
+        function drawGround() {
+            ctx.fillStyle = '#8B4513';  // 茶色
+            ctx.fillRect(0, player.groundY + player.height, canvas.width, canvas.height - (player.groundY + player.height));
+            
+            // 草の描画
+            ctx.fillStyle = '#228B22';
+            for (let i = 0; i < canvas.width; i += 20) {
+                ctx.fillRect(i, player.groundY + player.height, 2, 10);
+            }
+        }
+
+        // ============================================
+        // プレイヤー（人間）の描画（アニメーション対応）
+        // ============================================
+        function drawPlayer() {
+            // 回転とスケールを適用するためにコンテキストを保存
+            ctx.save();
+            
+            // プレイヤーの中心点を計算
+            const centerX = player.x + player.width / 2;
+            const centerY = player.y + player.height / 2;
+            
+            // 回転とスケールの中心点を設定
+            ctx.translate(centerX, centerY);
+            ctx.rotate(player.rotation);
+            ctx.scale(player.scale, player.scale);
+            ctx.translate(-centerX, -centerY);
+            
+            // 頭（円形）
+            ctx.fillStyle = '#FFDBAC';  // 肌色
+            ctx.beginPath();
+            ctx.arc(centerX, player.y + 8, 10, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 顔の輪郭
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(centerX, player.y + 8, 10, 0, 2 * Math.PI);
+            ctx.stroke();
+            
+            // 目（2つ）
+            ctx.fillStyle = '#000000';  // 黒
+            ctx.beginPath();
+            ctx.arc(centerX - 4, player.y + 6, 2, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(centerX + 4, player.y + 6, 2, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 口
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(centerX, player.y + 10, 3, 0, Math.PI);
+            ctx.stroke();
+            
+            // 体（胴体）
+            ctx.fillStyle = '#4169E1';  // 青いシャツ
+            ctx.fillRect(centerX - 8, player.y + 18, 16, 12);
+            
+            // 腕（左）
+            ctx.fillStyle = '#FFDBAC';  // 肌色
+            ctx.fillRect(centerX - 12, player.y + 20, 4, 10);
+            // 腕（右）
+            ctx.fillRect(centerX + 8, player.y + 20, 4, 10);
+            
+            // 足（左）
+            ctx.fillStyle = '#000000';  // 黒いズボン
+            ctx.fillRect(centerX - 8, player.y + 30, 6, 10);
+            // 足（右）
+            ctx.fillRect(centerX + 2, player.y + 30, 6, 10);
+            
+            // コンテキストを復元
+            ctx.restore();
+        }
+        
+        // ============================================
+        // パーティクルの描画
+        // ============================================
+        function drawParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                ctx.fillStyle = `rgba(65, 105, 225, ${p.alpha})`;  // 青いパーティクル
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, 2 * Math.PI);
+                ctx.fill();
+                
+                // パーティクルの更新
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.2;  // 重力
+                p.alpha -= 0.02;
+                p.size *= 0.98;
+                
+                // パーティクルが消えたら削除
+                if (p.alpha <= 0 || p.size <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+        
+        // ============================================
+        // パーティクルの生成（ジャンプ時）
+        // ============================================
+        function createJumpParticles() {
+            const centerX = player.x + player.width / 2;
+            const centerY = player.y + player.height;
+            
+            for (let i = 0; i < 8; i++) {
+                particles.push({
+                    x: centerX,
+                    y: centerY,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: -Math.random() * 3 - 1,
+                    size: Math.random() * 3 + 2,
+                    alpha: 1
+                });
+            }
+        }
+
+        // ============================================
+        // 障害物の描画
+        // ============================================
+        function drawObstacle(obstacle) {
+            ctx.fillStyle = '#8B0000';  // 濃い赤
+            ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+            
+            // 障害物に模様を追加
+            ctx.fillStyle = '#FF0000';
+            ctx.fillRect(obstacle.x + 5, obstacle.y + 5, obstacle.width - 10, obstacle.height - 10);
+        }
+
+        // ============================================
+        // 障害物の生成
+        // ============================================
+        function createObstacle() {
+            const obstacleHeight = 30;  // 障害物の高さを30に変更
+            obstacles.push({
+                x: canvas.width,                    // 画面の右端から開始
+                y: player.groundY + player.height - obstacleHeight,  // 地面の上（底が地面の上端に来る）
+                width: 30,                          // 幅
+                height: obstacleHeight              // 高さ
+            });
+        }
+
+        // ============================================
+        // 衝突判定
+        // ============================================
+        function checkCollision(player, obstacle) {
+            return player.x < obstacle.x + obstacle.width &&
+                   player.x + player.width > obstacle.x &&
+                   player.y < obstacle.y + obstacle.height &&
+                   player.y + player.height > obstacle.y;
+        }
+
+        // ============================================
+        // ゲームの更新処理
+        // ============================================
+        function update() {
+            if (!gameRunning) return;
+
+            // プレイヤーの物理演算
+            player.velocityY += player.gravity;  // 重力を適用
+            player.y += player.velocityY;       // Y座標を更新
+
+            // アニメーション：回転とスケールの更新
+            if (!player.onGround) {
+                // 空中にいる時：回転（落下速度に応じて）
+                player.rotation += player.velocityY * 0.02;
+                // スケール：ジャンプ時は少し縮む
+                if (player.velocityY < 0) {
+                    player.scale = Math.max(0.9, 1 + player.velocityY * 0.01);
+                } else {
+                    player.scale = Math.min(1.1, 1 - player.velocityY * 0.01);
+                }
+            } else {
+                // 地面にいる時：回転をリセット
+                player.rotation *= 0.9;  // 滑らかにリセット
+                // スケールをリセット（着地時のバウンス効果）
+                if (Math.abs(player.rotation) > 0.1) {
+                    player.scale = 0.95 + Math.abs(player.rotation) * 0.1;
+                } else {
+                    player.scale = 1;
+                }
+            }
+
+            // 地面との衝突判定
+            const wasInAir = !player.onGround;
+            if (player.y >= player.groundY) {
+                player.y = player.groundY;
+                player.velocityY = 0;
+                player.onGround = true;
+                player.jumpCount = 0;  // 地面に着地したらジャンプ回数をリセット
+                
+                // 着地時のパーティクルエフェクト
+                if (wasInAir) {
+                    createJumpParticles();
+                }
+            } else {
+                player.onGround = false;
+            }
+            
+            // 前フレームのY座標を保存
+            player.lastY = player.y;
+
+            // 障害物の生成
+            obstacleTimer++;
+            if (obstacleTimer >= obstacleInterval) {
+                createObstacle();
+                obstacleTimer = 0;
+            }
+
+            // 障害物の更新
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].x -= gameSpeed;  // 左に移動
+
+                // 衝突判定
+                if (checkCollision(player, obstacles[i])) {
+                    gameOver();
+                    return;
+                }
+
+                // 画面外に出た障害物を削除
+                if (obstacles[i].x + obstacles[i].width < 0) {
+                    obstacles.splice(i, 1);
+                    score += 10;  // スコア加算
+                    scoreElement.textContent = score;
+                    
+                    // スコアに応じてゲーム速度を上げる
+                    if (score % 100 === 0 && score > 0) {
+                        gameSpeed += 0.5;
+                    }
+                }
+            }
+        }
+
+        // ============================================
+        // ゲームの描画処理
+        // ============================================
+        function draw() {
+            // 背景をクリア
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 雲の描画（背景装飾）
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.beginPath();
+            ctx.arc(100, 80, 30, 0, 2 * Math.PI);
+            ctx.arc(120, 80, 35, 0, 2 * Math.PI);
+            ctx.arc(140, 80, 30, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.arc(600, 60, 25, 0, 2 * Math.PI);
+            ctx.arc(615, 60, 30, 0, 2 * Math.PI);
+            ctx.arc(630, 60, 25, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // 地面の描画
+            drawGround();
+            
+            // 障害物の描画
+            obstacles.forEach(drawObstacle);
+            
+            // パーティクルの描画
+            drawParticles();
+            
+            // プレイヤーの描画
+            drawPlayer();
+        }
+
+        // ============================================
+        // ゲームループ
+        // ============================================
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ============================================
+        // 効果音の生成（Web Audio API使用）
+        // ============================================
+        function playJumpSound() {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                // 音の設定
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                // ジャンプ音：短く高い音
+                oscillator.frequency.value = 600;  // 周波数（Hz）
+                oscillator.type = 'sine';  // サイン波
+                
+                // 音量のエンベロープ（フェードアウト）
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                
+                // 音を再生
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.1);  // 0.1秒で停止
+            } catch (error) {
+                // 音声が再生できない場合はエラーを無視
+                console.log('音声再生エラー:', error);
+            }
+        }
+
+        // ============================================
+        // ジャンプ処理（二段ジャンプ対応）
+        // ============================================
+        function jump() {
+            if (!gameRunning) return;
+            
+            // ジャンプ回数が最大値未満の場合のみジャンプ可能
+            if (player.jumpCount < player.maxJumps) {
+                player.velocityY = player.jumpPower;
+                player.jumpCount++;  // ジャンプ回数を増やす
+                player.onGround = false;
+                
+                // ジャンプ時のアニメーション
+                player.rotation = -0.3;  // ジャンプ時に少し回転
+                player.scale = 0.9;      // ジャンプ時に少し縮む
+                
+                // ジャンプ時のパーティクルエフェクト
+                createJumpParticles();
+                
+                playJumpSound();  // ジャンプ効果音を再生
+            }
+        }
+
+        // ============================================
+        // キーボード入力の処理
+        // ============================================
+        document.addEventListener('keydown', function(event) {
+            if (event.code === 'Space' || event.code === 'ArrowUp') {
+                event.preventDefault();
+                jump();
+            }
+        });
+
+        // ============================================
+        // ゲームオーバー処理
+        // ============================================
+        function gameOver() {
+            gameRunning = false;
+            finalScoreElement.textContent = score;
+            gameOverDiv.style.display = 'block';
+        }
+
+        // ============================================
+        // ゲームの再開処理
+        // ============================================
+        function restartGame() {
+            // ゲーム状態をリセット
+            gameRunning = true;
+            score = 0;
+            gameSpeed = 2;
+            obstacles = [];
+            obstacleTimer = 0;
+            
+            // プレイヤーをリセット
+            player.x = 100;
+            player.y = player.groundY;
+            player.velocityY = 0;
+            player.onGround = true;
+            player.jumpCount = 0;  // ジャンプ回数もリセット
+            player.rotation = 0;   // 回転をリセット
+            player.scale = 1;      // スケールをリセット
+            player.lastY = player.groundY;  // 前フレームのY座標をリセット
+            
+            // パーティクルをクリア
+            particles = [];
+            
+            // UIをリセット
+            scoreElement.textContent = score;
+            gameOverDiv.style.display = 'none';
+        }
+
+        // ============================================
+        // ゲーム開始
+        // ============================================
+        gameLoop();
+    </script>
+</body>
+</html>
